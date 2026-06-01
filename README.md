@@ -2,10 +2,10 @@
 
 Bot pro **asynchronní draft** Flesh and Blood. Hráči draftují každý ve svém soukromém kanálu a **nemusí být online ve stejnou chvíli** — každý pickne, až se dostane ke slovu, a bot pošle zbytek balíčku dál.
 
-- [Přehled karet v poolu](TODO_1_prehled_poolu.md)
-- [Identita balíčku](TODO_2_balicek_identita.md)
-- [Zachování bota](TODO_3_perzistence.md)
-- [Oprava duplicit v boosterch](TODO_4_oprava_duplicit.md)
+- [Přehled karet v poolu](docs/TODO_1_prehled_poolu.md)
+- [Identita balíčku](docs/TODO_2_balicek_identita.md)
+- [Zachování bota](docs/TODO_3_perzistence.md)
+- [Oprava duplicit v boosterch](docs/TODO_4_oprava_duplicit.md)
 
 ## :white_check_mark: Co už bot umí
 
