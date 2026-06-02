@@ -2,6 +2,7 @@ import os
 import random
 import discord
 import re
+import random
 from discord import app_commands, ui
 from dotenv import load_dotenv
 from collections import deque
@@ -142,6 +143,7 @@ client = DraftBot()
 
 
 ADMIN_CHANNEL_ID = None   # sem se uloží ID kanálu draft-pod-1
+PANEL_MESSAGE = None   # zpráva s přihlašovacím panelem
 
 
 @client.event
@@ -248,6 +250,26 @@ async def send_pack_to_seat(seat):
         view = build_pack_view(seat.active_pack)
         await channel.send(view=view)
 
+async def start_draft_flow():
+    """Spustí draft: reset, otevře 1. pack, rozešle balíčky. Sdílené /draft_start i tlačítkem."""
+    for s in DRAFT.seats:
+        s.pool = []
+        s.active_pack = None
+        s.queue.clear()
+    DRAFT.running = True
+    DRAFT.open_pack(1)
+    for seat in DRAFT.seats:
+        await send_pack_to_seat(seat)
+    # (pokud máš TODO #7) zamkni panel:
+    if PANEL_MESSAGE is not None:
+        try:
+            await PANEL_MESSAGE.edit(content=panel_text(), view=JoinPanel())
+        except Exception as e:
+            print("Nepodařilo se zamknout panel:", e)
+    # (pokud máš TODO #3) ulož stav:
+    # await save_state()
+
+
 ORGANIZER_ROLE = "Organizer"
 def is_organizer(interaction: discord.Interaction) -> bool:
     """True, pokud má uživatel roli Organizer."""
@@ -317,16 +339,8 @@ async def draft_start(interaction: discord.Interaction):
         await interaction.response.send_message(
             "Tohle můžou spustit jen organizátoři (role Organizer).", ephemeral=True)
         return
-    for s in DRAFT.seats:
-        s.pool = []
-        s.active_pack = None
-        s.queue.clear()
-    DRAFT.running = True
-    DRAFT.open_pack(1)
-    await interaction.response.send_message(
-        "Draft spuštěn! Posílám první packy do seat kanálů…", ephemeral=True)
-    for seat in DRAFT.seats:
-        await send_pack_to_seat(seat)
+    await interaction.response.send_message("Draft spuštěn! Posílám balíčky…", ephemeral=True)
+    await start_draft_flow()
 
 
 @client.tree.command(name="draft_next", description="ADMIN: otevře další pack")
@@ -444,7 +458,11 @@ def seat_of_player(user_id):
 
 
 def panel_text():
-    lines = [f"## 🎴 Přihlášení do draftu ({seats_taken()}/{NUM_SEATS})", ""]
+    if DRAFT.running:
+        header = "## 🎴 Draft právě probíhá — přihlašování uzavřeno"
+    else:
+        header = f"## 🎴 Přihlášení do draftu ({seats_taken()}/{NUM_SEATS})"
+    lines = [header, ""]
     for s in DRAFT.seats:
         who = f"<@{s.player_id}>" if s.player_id else "_volné_"
         lines.append(f"**seat-{s.number}:** {who}")
@@ -455,57 +473,187 @@ async def get_seat_role(guild, seat_number):
     name = f"{SEAT_ROLE_PREFIX}{seat_number}"
     return discord.utils.get(guild.roles, name=name)
 
+import random
+
+async def shuffle_seats(guild):
+    """Náhodně přehází přihlášené hráče mezi seaty + přehodí jejich seat role."""
+    # 1) posbírej současné hráče
+    players = [s.player_id for s in DRAFT.seats if s.player_id is not None]
+    random.shuffle(players)
+
+    # 2) přiřaď je seatům znovu (doplň None, kdyby nebylo plno)
+    new_assignment = players + [None] * (NUM_SEATS - len(players))
+
+    # 3) přehoď role a player_id
+    for seat, new_pid in zip(DRAFT.seats, new_assignment):
+        old_pid = seat.player_id
+        # odeber starou roli původnímu hráči tohoto seatu
+        if old_pid is not None:
+            member = guild.get_member(old_pid)
+            role = await get_seat_role(guild, seat.number)
+            if member and role:
+                try:
+                    await member.remove_roles(role)
+                except discord.Forbidden:
+                    print(f"Nemohu odebrat roli seat-{seat.number}")
+        seat.player_id = None  # dočasně vyprázdni
+
+    # 4) teď přiřaď nové (až po odebrání všech starých, ať se role nekříží)
+    for seat, new_pid in zip(DRAFT.seats, new_assignment):
+        seat.player_id = new_pid
+        if new_pid is not None:
+            member = guild.get_member(new_pid)
+            role = await get_seat_role(guild, seat.number)
+            if member and role:
+                try:
+                    await member.add_roles(role)
+                except discord.Forbidden:
+                    print(f"Nemohu přidat roli seat-{seat.number}")
 
 class JoinPanel(ui.View):
     def __init__(self):
-        super().__init__(timeout=None)   # trvalý panel
+        super().__init__(timeout=None)
+        self.refresh()
+
+    def refresh(self):
+        # zašednutí join/leave při běžícím draftu (TODO #7)
+        self.join.disabled = DRAFT.running
+        self.leave.disabled = DRAFT.running
+        # tlačítko Spustit: jen když je plno a draft ještě neběží
+        full = (seats_taken() >= NUM_SEATS) and not DRAFT.running
+        self.start.disabled = not full
+        self.shuffle.disabled = not full   # <-- přidat
+        # volitelně tlačítko úplně skrýt, když nemá smysl:
+        self.start.style = discord.ButtonStyle.success if full else discord.ButtonStyle.secondary
 
     @ui.button(label="Přihlásit do draftu", style=discord.ButtonStyle.success,
-               custom_id="draft_join")
+               custom_id="draft_join", row=0)
     async def join(self, interaction: discord.Interaction, button: ui.Button):
-        if seat_of_player(interaction.user.id):
-            await interaction.response.send_message("Už jsi přihlášený.", ephemeral=True)
+        if DRAFT.running:
+            await interaction.response.send_message(
+                "Draft už běží, přihlašování je uzavřeno.", ephemeral=True)
             return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Tohle tlačítko použij na serveru.", ephemeral=True)
+            return
+        if seat_of_player(interaction.user.id) is not None:
+            await interaction.response.send_message(
+                "Už jsi do draftu přihlášený.", ephemeral=True)
+            return
+
         seat = first_free_seat()
         if seat is None:
-            await interaction.response.send_message("Draft je plný (8/8).", ephemeral=True)
-            return
-        role = await get_seat_role(interaction.guild, seat.number)
-        if role is None:
             await interaction.response.send_message(
-                f"Nenašel jsem roli `{SEAT_ROLE_PREFIX}{seat.number}`. Řekni organizátorovi.",
-                ephemeral=True)
+                "Draft je už plný.", ephemeral=True)
             return
-        try:
-            await interaction.user.add_roles(role)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "Nemám právo přidělit roli (zkontroluj Manage Roles a pořadí rolí).",
-                ephemeral=True)
-            return
+
         seat.player_id = interaction.user.id
+
+        role_warning = None
+        role = await get_seat_role(interaction.guild, seat.number)
+        if role is not None and isinstance(interaction.user, discord.Member):
+            try:
+                await interaction.user.add_roles(role, reason="Přihlášení do draftu")
+            except discord.Forbidden:
+                role_warning = "Nemám právo přidat ti seat roli."
+            except Exception as e:
+                role_warning = f"Seat roli se nepodařilo přidat ({type(e).__name__})."
+        elif role is None:
+            role_warning = f"Role {SEAT_ROLE_PREFIX}{seat.number} neexistuje."
+
+        self.refresh()
         await interaction.response.edit_message(content=panel_text(), view=self)
-        await interaction.followup.send(
-            f"✅ Přihlášen do **seat-{seat.number}**. Kanál by se ti měl zobrazit.",
-            ephemeral=True)
+
+        if role_warning:
+            await interaction.followup.send(role_warning, ephemeral=True)
 
     @ui.button(label="Odhlásit z draftu", style=discord.ButtonStyle.danger,
-               custom_id="draft_leave")
+               custom_id="draft_leave", row=0)
     async def leave(self, interaction: discord.Interaction, button: ui.Button):
+        if DRAFT.running:
+            await interaction.response.send_message(
+                "Draft už běží, odhlašování je uzavřeno.", ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Tohle tlačítko použij na serveru.", ephemeral=True)
+            return
+
         seat = seat_of_player(interaction.user.id)
         if seat is None:
-            await interaction.response.send_message("Nejsi přihlášený.", ephemeral=True)
+            await interaction.response.send_message(
+                "Nejsi přihlášený do draftu.", ephemeral=True)
             return
-        role = await get_seat_role(interaction.guild, seat.number)
-        if role:
-            try:
-                await interaction.user.remove_roles(role)
-            except discord.Forbidden:
-                pass
+
+        old_seat_number = seat.number
         seat.player_id = None
+
+        self.refresh()
         await interaction.response.edit_message(content=panel_text(), view=self)
-        await interaction.followup.send(
-            f"Odhlášen ze **seat-{seat.number}**.", ephemeral=True)
+
+        role = await get_seat_role(interaction.guild, old_seat_number)
+        if role is not None and isinstance(interaction.user, discord.Member):
+            try:
+                await interaction.user.remove_roles(role, reason="Odhlášení z draftu")
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "Nemám právo odebrat ti seat roli.", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(
+                    f"Seat roli se nepodařilo odebrat ({type(e).__name__}).",
+                    ephemeral=True)
+
+    @ui.button(label="Spustit draft", style=discord.ButtonStyle.success,
+               custom_id="draft_start_btn", row=1)
+    async def start(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_organizer(interaction):
+            await interaction.response.send_message(
+                "Spustit draft může jen organizátor (role Organizer).", ephemeral=True)
+            return
+        if seats_taken() < NUM_SEATS:
+            await interaction.response.send_message(
+                "Draft ještě není plný.", ephemeral=True)
+            return
+        if DRAFT.running:
+            await interaction.response.send_message(
+                "Draft už běží.", ephemeral=True)
+            return
+        await interaction.response.send_message("Spouštím draft…", ephemeral=True)
+        await start_draft_flow()
+
+    @ui.button(label="Zamíchat rozestavení", style=discord.ButtonStyle.primary,
+               custom_id="draft_shuffle_btn", row=1)
+    async def shuffle(self, interaction: discord.Interaction, button: ui.Button):
+        if not is_organizer(interaction):
+            await interaction.response.send_message(
+                "Zamíchat může jen organizátor (role Organizer).", ephemeral=True)
+            return
+        if seats_taken() < NUM_SEATS:
+            await interaction.response.send_message(
+                "Zamíchat jde až při plném panelu (8/8).", ephemeral=True)
+            return
+        if DRAFT.running:
+            await interaction.response.send_message(
+                "Draft už běží, míchat nelze.", ephemeral=True)
+            return
+        await interaction.response.send_message("Míchám rozestavení… 🎲", ephemeral=True)
+        await shuffle_seats(interaction.guild)
+        self.refresh()
+        if PANEL_MESSAGE is not None:
+            try:
+                await PANEL_MESSAGE.edit(content=panel_text(), view=self)
+            except Exception:
+                pass
+        # volitelně: pošli nové rozsazení do draft-pod-1
+        admin = client.get_channel(ADMIN_CHANNEL_ID) if ADMIN_CHANNEL_ID else None
+        if admin:
+            lines = ["**🎲 Nové rozestavení:**"]
+            for s in DRAFT.seats:
+                who = f"<@{s.player_id}>" if s.player_id else "_volné_"
+                lines.append(f"seat-{s.number}: {who}")
+            await admin.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
 
 
 @client.tree.command(name="draft_panel", description="ADMIN: zobrazí přihlašovací panel")
@@ -514,6 +662,9 @@ async def draft_panel(interaction: discord.Interaction):
         await interaction.response.send_message(
             "Tohle můžou spustit jen organizátoři (role Organizer).", ephemeral=True)
         return
-    await interaction.response.send_message(panel_text(), view=JoinPanel())
+    global PANEL_MESSAGE
+    view = JoinPanel()
+    await interaction.response.send_message(panel_text(), view=view)
+    PANEL_MESSAGE = await interaction.original_response()
 
 client.run(os.getenv("DISCORD_TOKEN"))
