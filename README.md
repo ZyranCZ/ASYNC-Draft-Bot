@@ -4,6 +4,10 @@ Bot pro **asynchronní draft** Flesh and Blood. Hráči draftují každý ve sv�
 
 ## :white_check_mark: Co už bot umí
 
+<p align="center">
+  <img src="logo.png" alt="ASYNC Draft Bot logo" width="140">
+</p>
+
 **Načítání setu**
 - Importuje Draftmancer `.txt` soubor (sekce Settings, CustomCards, Layouts i slot-pooly).
 - Aktuální set OMEN: **209 karet, 18 layoutů, 10 slot-poolů.**
