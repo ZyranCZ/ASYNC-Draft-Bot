@@ -5,6 +5,8 @@ import re
 from discord import app_commands, ui
 from dotenv import load_dotenv
 from collections import deque
+from urllib.parse import quote
+from datetime import date
 
 from draftmancer_parser import parse_draftmancer
 from booster_generator import generate_booster, make_inventory
@@ -223,10 +225,19 @@ def pool_summary(pool):
     )
 
 
-def build_fabrary_url(pool):
+TOTAL_PICKS = 42   # 3 packy × 14 karet
+
+
+def build_fabrary_url(pool, player_name=None):
     base = "https://fabrary.net/decks?tab=import&format=draft"
     parts = [f"&cards={c['collectorNumber']}" for c in pool if c.get("collectorNumber")]
-    return base + "".join(parts)
+    url = base + "".join(parts)
+    if player_name:
+        today = date.today().strftime("%d/%m/%Y")
+        pick_no = len(pool)   # počet karet v poolu = číslo aktuálního picku
+        deck_name = f"{player_name}'s ASYNC Draft {today} (Pick {pick_no:02d}/{TOTAL_PICKS})"
+        url += "&name=" + quote(deck_name, safe="")
+    return url
 
 
 async def send_pack_to_seat(seat):
@@ -356,7 +367,8 @@ async def pick(interaction: discord.Interaction, cislo: int):
     chosen, newly_active = DRAFT.pick(seat_index, cislo - 1)
 
     rf = " [RF]" if chosen.get("rf") else ""
-    url = build_fabrary_url(seat.pool)
+    player_name = interaction.user.display_name
+    url = build_fabrary_url(seat.pool, player_name)
 
     hlava = (
         f"✅ Vybral sis: **{short_name(chosen['name'])}{rf}**\n\n"
