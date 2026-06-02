@@ -1,6 +1,7 @@
 import os
 import random
 import discord
+import re
 from discord import app_commands, ui
 from dotenv import load_dotenv
 from collections import deque
@@ -162,6 +163,10 @@ def build_pack_view(booster, pack_no):
     view.add_item(container)
     return view
 
+def pitch_of(name):
+    m = re.search(r"\((red|yellow|blue)\)", name.lower())
+    return m.group(1) if m else None
+
 def short_name(name):
     return (name
             .replace("(red)", "(R)")
@@ -174,6 +179,29 @@ def format_pool(pool):
     return "\n".join(
         f"{i}. {short_name(c['name'])}{' [RF]' if c.get('rf') else ''}"
         for i, c in enumerate(pool, 1)
+    )
+
+def pool_summary(pool):
+    pitch = {"red": 0, "yellow": 0, "blue": 0}
+    slots = {"Head": [], "Chest": [], "Arms": [], "Legs": []}
+    for c in pool:
+        p = pitch_of(c["name"])
+        if p:
+            pitch[p] += 1
+        for s in slots:
+            if s in (c.get("type") or []):
+                slots[s].append(short_name(c["name"]))
+
+    def slot_line(label, cards):
+        return f"**{label}:** " + (", ".join(cards) if cards else "—")
+
+    return (
+        "\n\n**—————PITCH—————**\n"
+        f"🔴{pitch['red']}     🟡{pitch['yellow']}     🔵{pitch['blue']}\n"
+        f"{slot_line('HEAD', slots['Head'])}\n"
+        f"{slot_line('CHEST', slots['Chest'])}\n"
+        f"{slot_line('ARMS', slots['Arms'])}\n"
+        f"{slot_line('LEGS', slots['Legs'])}"
     )
 
 
@@ -315,17 +343,18 @@ async def pick(interaction: discord.Interaction, cislo: int):
     rf = " [RF]" if chosen.get("rf") else ""
     url = build_fabrary_url(seat.pool)
 
-    # 1) NEJDŘÍV pošli balíčky dalším aktivním seatům (to je nejdůležitější)
-    for s in newly_active:
-        await send_pack_to_seat(s)
-
-    # 2) teď potvrzení hráči — ošetřeno, ať případný pád nezablokuje nic dalšího
     hlava = (
         f"✅ Vybral sis: **{short_name(chosen['name'])}{rf}**\n\n"
         f"__**Tvůj dosavadní pool ({len(seat.pool)}):**__\n"
         f"{format_pool(seat.pool)}"
+        f"{pool_summary(seat.pool)}"
     )
     odkaz = f"\n\n📦 [Zobrazit celý balíček na Fabrary]({url})"
+
+    # 1) balíčky dalším seatům (důležité)
+    for s in newly_active:
+        await send_pack_to_seat(s)
+    # 2) potvrzení hráči s pojistkou na 2000 znaků
     try:
         if len(hlava) + len(odkaz) <= 2000:
             await interaction.response.send_message(hlava + odkaz)
