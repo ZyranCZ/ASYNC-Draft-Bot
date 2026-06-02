@@ -2,7 +2,11 @@
 
 import random
 from draftmancer_parser import parse_draftmancer
+import re
 
+def base_name(name):
+    """Název karty bez pitch koncovky: 'Ebbing Arcstride (red)' -> 'Ebbing Arcstride'."""
+    return re.sub(r"\s*\((red|yellow|blue)\)\s*$", "", name, flags=re.I).strip()
 
 def _expand_pool(pool):
     flat = []
@@ -22,28 +26,39 @@ def pick_layout(model, rng):
 
 
 def generate_booster(model, inventory=None, rng=None):
+    """Vygeneruje jeden booster. Karty jsou v rámci boosteru unikátní podle
+    ZÁKLADNÍHO názvu (bez pitche) — žádné dvě pitch varianty téže karty.
+    Výjimka: RF sloty se nehlídají (RF varianta smí být duplicitní)."""
     rng = rng or random.Random()
-    with_replacement = model["settings"].get("withReplacement", False)
     layout = pick_layout(model, rng)
 
     booster = []
+    used_bases = set()   # base názvy NE-RF karet, které už v boosteru jsou
+
     for slot in layout["slots"]:
         name_slot = slot["slot"]
         count = slot["count"]
-        if with_replacement:
-            names = [e["name"] for e in model["slotPools"].get(name_slot, [])]
-            chosen = [rng.choice(names) for _ in range(count)] if names else []
-        else:
-            bag = inventory[name_slot]
-            take = min(count, len(bag))
-            chosen = rng.sample(bag, take)
-            for c in chosen:
-                bag.remove(c)
-        for name in chosen:
+        is_rf = name_slot.startswith("RF")
+
+        # unikátní celé názvy dostupné v tomto slotu, zamíchané
+        available = list({e["name"] for e in model["slotPools"].get(name_slot, [])})
+        rng.shuffle(available)
+
+        taken = 0
+        for name in available:
+            if taken >= count:
+                break
+            b = base_name(name)
+            if not is_rf and b in used_bases:
+                continue   # tato karta (i v jiné barvě) už v boosteru je → přeskoč
             card = dict(model["cards"][name])
             card["slot"] = name_slot
-            card["rf"] = name_slot.startswith("RF")
+            card["rf"] = is_rf
             booster.append(card)
+            if not is_rf:
+                used_bases.add(b)
+            taken += 1
+
     return booster, layout["id"]
 
 

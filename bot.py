@@ -18,6 +18,8 @@ if ERRORS:
 NUM_SEATS = 8
 NUM_PACKS = 3
 DIRECTIONS = ["forward", "backward", "forward"]
+PACK_SIZE = 14
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -65,25 +67,26 @@ class Draft:
         self.current_pack_number = pack_number
         self.inventory = make_inventory(self.model)
         for seat in self.seats:
-            booster, _ = generate_booster(self.model, inventory=self.inventory)
-            seat.active_pack = booster
+            cards, _ = generate_booster(self.model, inventory=self.inventory)
+            seat.active_pack = Pack(cards, origin_seat=seat.number,
+                                    pack_number=pack_number)
             seat.queue.clear()
 
     def pick(self, seat_index, card_index):
         seat = self.seats[seat_index]
         pack = seat.active_pack
-        chosen = pack.pop(card_index)
+        chosen = pack.cards.pop(card_index)
         seat.pool.append(chosen)
 
-        newly_active = []   # seaty, kterým TEĎ nově naskočil aktivní pack
+        newly_active = []
 
-        # zbytek packu pošli dál
-        if pack:
+        # zbytek balíčku pošli dál (pokud něco zbylo)
+        if pack.cards:
             tgt = self.seats[self.next_seat_index(seat_index)]
             if tgt.has_active():
-                tgt.queue.append(pack)          # cíl má aktivní → do fronty
+                tgt.queue.append(pack)
             else:
-                tgt.active_pack = pack           # cíl byl volný → nově aktivní
+                tgt.active_pack = pack
                 newly_active.append(tgt)
 
         # tomuto seatu vytáhni další z fronty
@@ -98,6 +101,21 @@ class Draft:
     def round_finished(self):
         return all(not s.has_active() and not s.queue for s in self.seats)
 
+PACK_SIZE = 14
+
+
+class Pack:
+    def __init__(self, cards, origin_seat, pack_number):
+        self.cards = cards
+        self.origin_seat = origin_seat
+        self.pack_number = pack_number
+
+    def pick_number(self):
+        # kolikátá karta se z balíčku zrovna bere (1..PACK_SIZE)
+        return PACK_SIZE - len(self.cards) + 1
+
+    def title(self):
+        return f"Seat {self.origin_seat}'s Pack #{self.pack_number} — Pick #{self.pick_number()}"
 
 DRAFT = Draft(MODEL)
 
@@ -146,17 +164,17 @@ def chunk_pairs(seq):
     return [seq[i:i + 2] for i in range(0, len(seq), 2)]
 
 
-def build_pack_view(booster, pack_no):
+def build_pack_view(pack):
     view = ui.LayoutView()
     container = ui.Container()
-    for pair in chunk_pairs(booster):
+    for pair in chunk_pairs(pack.cards):
         gallery = ui.MediaGallery()
         for card in pair:
             gallery.add_item(media=card["imageUrl"])
         container.add_item(gallery)
     container.add_item(ui.Separator())
-    lines = [f"__**Pack {pack_no} — vyber kartu pomocí /pick [číslo]:**__"]
-    for i, c in enumerate(booster, 1):
+    lines = [f"**{pack.title()}\nVyber kartu pomocí /pick [číslo]:**\n"]
+    for i, c in enumerate(pack.cards, 1):
         rf = " [RF]" if c.get("rf") else ""
         lines.append(f"{i}) {short_name(c['name'])}{rf}")
     container.add_item(ui.TextDisplay("\n".join(lines)))
@@ -216,7 +234,7 @@ async def send_pack_to_seat(seat):
         return
     channel = client.get_channel(seat.channel_id)
     if channel:
-        view = build_pack_view(seat.active_pack, DRAFT.current_pack_number)
+        view = build_pack_view(seat.active_pack)
         await channel.send(view=view)
 
 ORGANIZER_ROLE = "Organizer"
@@ -329,13 +347,10 @@ async def pick(interaction: discord.Interaction, cislo: int):
     if not seat.has_active():
         await interaction.response.send_message("Nemáš teď žádný aktivní pack.", ephemeral=True)
         return
-    if cislo < 1 or cislo > len(seat.active_pack):
+    if cislo < 1 or cislo > len(seat.active_pack.cards):
         await interaction.response.send_message(
-            f"Neplatná volba. Vyber číslo od 1 do {len(seat.active_pack)}.", ephemeral=True)
+            f"Neplatná volba. Vyber číslo od 1 do {len(seat.active_pack.cards)}.", ephemeral=True)
         return
-
-
-
 
     seat_index = seat.number - 1
     chosen, newly_active = DRAFT.pick(seat_index, cislo - 1)
