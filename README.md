@@ -1,4 +1,4 @@
-# :flower_playing_cards: ASYNC Draft Bot — v0.6.0
+# <img src="logo.png" alt="ASYNC Draft Bot logo" width="60"> ASYNC Draft Bot — v0.6.0
 
 Bot pro **asynchronní draft** Flesh and Blood. Hráči draftují každý ve svém soukromém kanálu a **nemusí být online ve stejnou chvíli** — každý pickne, až se dostane ke slovu, a bot pošle zbytek balíčku dál.
 
