@@ -157,17 +157,22 @@ def build_pack_view(booster, pack_no):
     lines = [f"__**Pack {pack_no} — vyber kartu pomocí /pick [číslo]:**__"]
     for i, c in enumerate(booster, 1):
         rf = " [RF]" if c.get("rf") else ""
-        lines.append(f"{i}) {c['name']}{rf}")
+        lines.append(f"{i}) {short_name(c['name'])}{rf}")
     container.add_item(ui.TextDisplay("\n".join(lines)))
     view.add_item(container)
     return view
 
+def short_name(name):
+    return (name
+            .replace("(red)", "(R)")
+            .replace("(yellow)", "(Y)")
+            .replace("(blue)", "(B)"))
 
 def format_pool(pool):
     if not pool:
         return "_(zatím prázdný)_"
     return "\n".join(
-        f"{i}. {c['name']}{' [RF]' if c.get('rf') else ''} — {c['rarity']}"
+        f"{i}. {short_name(c['name'])}{' [RF]' if c.get('rf') else ''}"
         for i, c in enumerate(pool, 1)
     )
 
@@ -309,17 +314,27 @@ async def pick(interaction: discord.Interaction, cislo: int):
 
     rf = " [RF]" if chosen.get("rf") else ""
     url = build_fabrary_url(seat.pool)
-    zprava = (
-        f"✅ Vybral sis: **{chosen['name']}{rf}** — {chosen['rarity']}\n\n"
-        f"__**Tvůj dosavadní pool ({len(seat.pool)}):**__\n"
-        f"{format_pool(seat.pool)}\n\n"
-        f"📦 [Zobrazit celý balíček na Fabrary]({url})"
-    )
-    await interaction.response.send_message(zprava)
 
-    # pošli pack všem seatům, kterým teď nově naskočil aktivní pack
+    # 1) NEJDŘÍV pošli balíčky dalším aktivním seatům (to je nejdůležitější)
     for s in newly_active:
         await send_pack_to_seat(s)
+
+    # 2) teď potvrzení hráči — ošetřeno, ať případný pád nezablokuje nic dalšího
+    hlava = (
+        f"✅ Vybral sis: **{short_name(chosen['name'])}{rf}**\n\n"
+        f"__**Tvůj dosavadní pool ({len(seat.pool)}):**__\n"
+        f"{format_pool(seat.pool)}"
+    )
+    odkaz = f"\n\n📦 [Zobrazit celý balíček na Fabrary]({url})"
+    try:
+        if len(hlava) + len(odkaz) <= 2000:
+            await interaction.response.send_message(hlava + odkaz)
+        else:
+            await interaction.response.send_message(hlava[:1990])
+            await interaction.followup.send(odkaz.strip())
+    except Exception as e:
+        print("Nepodařilo se poslat potvrzení picku:", e)
+
 
     # info o dokončení kola → do admin kanálu draft-pod-1, ne hráči
     if DRAFT.round_finished():
